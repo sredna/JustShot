@@ -1,5 +1,5 @@
 #pragma warning(disable : \
-	4706/*assignment within conditional expression*/ \
+	4706 /*assignment within conditional expression*/ \
 	4709/*comma operator within array index expression*/ \
 	4127/*conditional expression is constant*/ \
 	4505/*unref func del*/)
@@ -15,6 +15,7 @@ template<class T> T MemAlloc(SIZE_T cb) { return (T) LocalAlloc(LMEM_FIXED, cb);
 template<typename T> T ChLwr(T c) { return c >= 'A' && c <= 'Z' ? (T)(c|32) : c; }
 static inline bool PathIsAgnosticSeparator(UINT c) { return c == '\\' || c == '/'; }
 static inline UINT GetLastErrorAsHResult() { DWORD ec = GetLastError(); return HRESULT_FROM_WIN32(ec); }
+static DECLSPEC_NOINLINE FARPROC GetProcAddr(LPCSTR Mod, LPCSTR Nam) { return GetProcAddress(LoadLibraryA(Mod), Nam); }
 
 static HRESULT Write(HANDLE hFile, const void *Data, DWORD cb)
 {
@@ -69,9 +70,12 @@ static HRESULT SaveBitmapToBMP24(HDC hDC, HBITMAP hBmp, UINT w, UINT h, PCTSTR P
 	UINT headersize = 40;
 	BITMAPINFOHEADER &bih = header.bi.bmiHeader;
 	bih.biSize = headersize;
-	bih.biWidth = w, bih.biHeight = h;
-	bih.biPlanes = 1, bih.biBitCount = 24;
-	bih.biCompression = BI_RGB, bih.biSizeImage = 0;
+	bih.biWidth = w;
+	bih.biHeight = h;
+	bih.biPlanes = 1;
+	bih.biBitCount = 24;
+	bih.biCompression = BI_RGB;
+	bih.biSizeImage = 0;
 	bih.biXPelsPerMeter = bih.biYPelsPerMeter = 0;
 	bih.biClrUsed = bih.biClrImportant = 0;
 	UINT stride = 4 * ((w * (bih.biBitCount / 8) + 3) / 4);
@@ -125,10 +129,11 @@ static UINT IsClipboardPath(LPCTSTR Path)
 	return SupportsClipboard() && !lstrcmpi(Path, TEXT("CLIP")) ? 4 : 0;
 }
 
-static HRESULT CaptureScreen(CLSID*pEncoderId, PCTSTR Path)
+static HRESULT CaptureScreen(CLSID*pEncoderId, PCTSTR Path, BOOL SetClipboard)
 {
 	HRESULT hr = E_FAIL;
 	BOOL succ = false;
+	int x = GetSystemMetrics(SM_XVIRTUALSCREEN), y = GetSystemMetrics(SM_YVIRTUALSCREEN);
 	UINT smw = SM_CXVIRTUALSCREEN, w = GetSystemMetrics(smw);
 	if (sizeof(void*) < 8 && !w) w = GetSystemMetrics(smw = SM_CXSCREEN); // Win95/NT4
 	UINT h = GetSystemMetrics(smw + 1);
@@ -142,11 +147,11 @@ static HRESULT CaptureScreen(CLSID*pEncoderId, PCTSTR Path)
 			if (hCaptureBitmap)
 			{
 				HBITMAP hOrgCapBmp = SelectObject(hCaptureDC, hCaptureBitmap);
-				succ = BitBlt(hCaptureDC, 0, 0, w, h, hScreenDC, 0, 0, SRCCOPY|CAPTUREBLT);
+				succ = BitBlt(hCaptureDC, 0, 0, w, h, hScreenDC, x, y, SRCCOPY|CAPTUREBLT);
 				SelectObject(hCaptureDC, hOrgCapBmp);
 				if (succ)
 				{
-					if (IsClipboardPath(Path))
+					if (SetClipboard)
 						hr = SetClipboardBitmap(hCaptureBitmap);
 					else
 						hr = SaveBitmapToFile(hCaptureDC, hCaptureBitmap, w, h, Path, pEncoderId);
@@ -164,10 +169,15 @@ template<class T> static inline int App()
 {
 	using namespace Gdiplus;
 	HRESULT hr = S_OK;
-	UINT hasPath = false, cch, ec, timeout = 0;
+	UINT hasPath = false, cch, ec, timeout = 0, setClipboard = 0;
 	TCHAR buf[MAX_PATH + 255];
 	PCTSTR ext = TEXT("png"), extStart = 0, path = 0;
-	
+
+	const INT dpi_awareness_context_per_monitor_aware_v2 = (-4);
+	BOOL (WINAPI*spdac)(INT);
+	(FARPROC&)spdac = GetProcAddr("USER32", "SetProcessDpiAwarenessContext");
+	if (spdac) spdac(dpi_awareness_context_per_monitor_aware_v2);
+
 	PTSTR cl = GetCommandLine(), p = cl;
 	if (*p=='\"') do ++p; while(*p && *p != '\"'); else while(*p > ' ') ++p;
 next_param:
@@ -182,13 +192,13 @@ next_param:
 
 	if ((cch = IsClipboardPath(p)))
 	{
-		++hasPath;
+		setClipboard = ++hasPath;
 		path = p, p += cch;
 	}
 
 	if (p[0] == '/' && p[1] == '?')
 	{
-		MessageBoxA(0, "Usage: [1..9] [[[path\\]filename.]extension]", "JustShot v0.1 by Anders Kjersem", MB_ICONINFORMATION);
+		MessageBoxA(0, "Usage: [1..9] [[[path\\]filename.]extension]", "JustShot v0.2 by Anders Kjersem", MB_ICONINFORMATION);
 		return ERROR_CANCELLED;
 	}
 
@@ -207,7 +217,7 @@ next_param:
 		PWSTR olestr = 0;
 		// Use the Screenshots folder if it exists or the Pictures folder if not
 		HRESULT (WINAPI*shgkfp)(REFKNOWNFOLDERID,DWORD,HANDLE,PWSTR*);
-		(FARPROC&)shgkfp = GetProcAddress(LoadLibraryA("SHELL32"), "SHGetKnownFolderPath");
+		(FARPROC&)shgkfp = GetProcAddr("SHELL32", "SHGetKnownFolderPath");
 		hr = shgkfp ? shgkfp(FOLDERID_Screenshots, KF_FLAG_NO_APPCONTAINER_REDIRECTION|KF_FLAG_CREATE, NULL, &olestr) : E_FAIL;
 		if (FAILED(hr)) hr = SHGetSpecialFolderPath(CSIDL_MYPICTURES|CSIDL_FLAG_CREATE, &olestr);
 
@@ -240,7 +250,7 @@ next_param:
 		if (SUCCEEDED(hr))
 		{
 			if (SupportsTimeout()) Sleep(timeout);
-			hr = CaptureScreen(pEncoderId, path);
+			hr = CaptureScreen(pEncoderId, path, setClipboard);
 		}
 		if (gdipToken) GdiplusShutdown(gdipToken);
 	}
