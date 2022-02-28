@@ -220,7 +220,7 @@ next_param:
 
 	if (p[0] == '/' && p[1] == '?')
 	{
-		MessageBoxA(0, "Usage: [1..9] [[[path\\]filename.]extension]", "JustShot v0.2 by Anders Kjersem", MB_ICONINFORMATION);
+		MessageBoxA(0, "Usage: [1..9] [[[path\\]filename.]extension]", "JustShot v0.3 by Anders Kjersem", MB_ICONINFORMATION);
 		return ERROR_CANCELLED;
 	}
 
