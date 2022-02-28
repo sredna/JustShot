@@ -271,7 +271,7 @@ next_param:
 
 		if (SUCCEEDED(hr))
 		{
-			if (SupportsTimeout())
+			if (SupportsTimeout() && timeout)
 			{
 				Sleep(timeout);
 				MessageBeep(MB_ICONINFORMATION);
