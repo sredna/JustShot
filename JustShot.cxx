@@ -1,8 +1,20 @@
-#pragma warning(disable : \
-	4706 /*assignment within conditional expression*/ \
-	4709/*comma operator within array index expression*/ \
-	4127/*conditional expression is constant*/ \
-	4505/*unref func del*/)
+
+/*****************************************************************************\
+**                                                                           **
+**  JustShot                                                                 **
+**                                                                           **
+**  Licensed under the GNU General Public License v3.0 (the "License").      **
+**  You may not use this file except in compliance with the License.         **
+**                                                                           **
+**  You can obtain a copy of the License at http://gnu.org/licenses/gpl-3.0  **
+**                                                                           **
+\*****************************************************************************/
+
+#ifdef _MSC_VER
+#pragma warning(disable : 4706 /*assignment within conditional expression*/)
+#pragma warning(disable : 4127 /*conditional expression is constant*/)
+#endif
+
 #include <Windows.h>
 #include <tchar.h>
 #include <Shlobj.h>
@@ -173,10 +185,20 @@ template<class T> static inline int App()
 	TCHAR buf[MAX_PATH + 255];
 	PCTSTR ext = TEXT("png"), extStart = 0, path = 0;
 
-	const INT dpi_awareness_context_per_monitor_aware_v2 = (-4);
-	BOOL (WINAPI*spdac)(INT);
+	BOOL (WINAPI*spdac)(INT_PTR);
 	(FARPROC&)spdac = GetProcAddr("USER32", "SetProcessDpiAwarenessContext");
-	if (spdac) spdac(dpi_awareness_context_per_monitor_aware_v2);
+	if (spdac)
+	{
+		INT_PTR dpi_awareness_context_per_monitor_aware_v2 = INT_PTR(-4);
+		spdac(dpi_awareness_context_per_monitor_aware_v2);
+	}
+	else
+	{
+		HRESULT (WINAPI*spda)(UINT);
+		(FARPROC&)spda = GetProcAddr("SHCORE", "SetProcessDpiAwareness");
+		UINT process_per_monitor_dpi_aware = 2;
+		if (spda) spda(process_per_monitor_dpi_aware);
+	}
 
 	PTSTR cl = GetCommandLine(), p = cl;
 	if (*p=='\"') do ++p; while(*p && *p != '\"'); else while(*p > ' ') ++p;
@@ -249,7 +271,11 @@ next_param:
 
 		if (SUCCEEDED(hr))
 		{
-			if (SupportsTimeout()) Sleep(timeout);
+			if (SupportsTimeout())
+			{
+				Sleep(timeout);
+				MessageBeep(MB_ICONINFORMATION);
+			}
 			hr = CaptureScreen(pEncoderId, path, setClipboard);
 		}
 		if (gdipToken) GdiplusShutdown(gdipToken);
