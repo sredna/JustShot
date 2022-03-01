@@ -50,7 +50,7 @@ static HRESULT GetEncoderClsidFromExt(PCTSTR Ext, CLSID*pClsid)
 	if (Gdiplus::GetImageEncodersSize(&n, &cb)) return E_FAIL;
 	Gdiplus::ImageCodecInfo*pICI = MemAlloc<Gdiplus::ImageCodecInfo*>(cb);
 	if (!pICI) return E_OUTOFMEMORY;
-	for (UINT i = 0, c = GetImageEncoders(n, cb, pICI) ? 0 : n; i < c; ++i, a = 0)
+	for (UINT i = 0, c = Gdiplus::GetImageEncoders(n, cb, pICI) ? 0 : n; i < c; ++i, a = 0)
 	{
 		for (PCTSTR p = pICI[i].FilenameExtension, x = Ext; p[a];)
 		{
@@ -77,11 +77,10 @@ static HRESULT GetEncoderClsidFromExt(PCTSTR Ext, CLSID*pClsid)
 
 static HRESULT SaveBitmapToBMP24(HDC hDC, HBITMAP hBmp, UINT w, UINT h, PCTSTR Path)
 {
-	struct { BYTE fhbuf[2+2+4+2+2+4]; BITMAPINFO bi; } header;
-	DWORD *fh32 = (DWORD*) header.fhbuf;
-	UINT headersize = 40;
-	BITMAPINFOHEADER &bih = header.bi.bmiHeader;
-	bih.biSize = headersize;
+	struct { DWORD fh[4]; BITMAPINFO bi; } headers;
+
+	BITMAPINFOHEADER &bih = headers.bi.bmiHeader;
+	bih.biSize = 40;
 	bih.biWidth = w;
 	bih.biHeight = h;
 	bih.biPlanes = 1;
@@ -91,22 +90,23 @@ static HRESULT SaveBitmapToBMP24(HDC hDC, HBITMAP hBmp, UINT w, UINT h, PCTSTR P
 	bih.biXPelsPerMeter = bih.biYPelsPerMeter = 0;
 	bih.biClrUsed = bih.biClrImportant = 0;
 	UINT stride = 4 * ((w * (bih.biBitCount / 8) + 3) / 4);
-	UINT imagedatasize = stride * h;
-	fh32[0] = UINT(0x4D42) << 16;
-	fh32[1] = 0, fh32[2] = 0;
-	fh32[3] = 14 + headersize;
+	UINT imagedatasize = stride * h, colortablesize = 0;
+	headers.fh[3] = 14 + bih.biSize + colortablesize;
+	headers.fh[1] = headers.fh[3] + imagedatasize;
+	headers.fh[2] = 0;
+	headers.fh[0] = UINT(0x4D42) << 16;
 
-	BYTE *bits = MemAlloc<BYTE*>(imagedatasize), *fh = &header.fhbuf[2];
+	BYTE *bits = MemAlloc<BYTE*>(imagedatasize);
 	if (!bits) return E_OUTOFMEMORY;
 
-	HRESULT hr = GetDIBits(hDC, hBmp, 0, h, bits, &header.bi, DIB_RGB_COLORS) ? S_OK : E_FAIL;
+	HRESULT hr = GetDIBits(hDC, hBmp, 0, h, bits, &headers.bi, DIB_RGB_COLORS) ? S_OK : E_FAIL;
 	if (SUCCEEDED(hr))
 	{
 		HANDLE hFile = CreateFile(Path, GENERIC_WRITE, FILE_SHARE_READ, 0, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL|FILE_FLAG_SEQUENTIAL_SCAN, 0);
 		hr = GetLastErrorAsHResult();
 		if (hFile != INVALID_HANDLE_VALUE)
 		{
-			hr = Write(hFile, fh, 14 + headersize);
+			hr = Write(hFile, (char*)&headers + sizeof(headers.fh) - 14, 14 + bih.biSize);
 			if (SUCCEEDED(hr)) hr = Write(hFile, bits, imagedatasize);
 			CloseHandle(hFile);
 		}
@@ -220,8 +220,17 @@ next_param:
 
 	if (p[0] == '/' && p[1] == '?')
 	{
-		MessageBoxA(0, "Usage: [1..9] [[[path\\]filename.]extension]", "JustShot v0.3 by Anders Kjersem", MB_ICONINFORMATION);
+		MessageBoxA(0, "Usage: [1..9] [[[path\\]filename.]extension]", "JustShot v0.4 by Anders Kjersem", MB_ICONINFORMATION);
 		return ERROR_CANCELLED;
+	}
+
+	ULONG_PTR gdipToken;
+	Gdiplus::GdiplusStartupInput gdipStartupInput;
+	Gdiplus::Status gdips = Gdiplus::GdiplusStartup(&gdipToken, &gdipStartupInput, NULL);
+	if (gdips != Gdiplus::Ok)
+	{
+		gdipToken = 0;
+		ext = TEXT("bmp");
 	}
 
 	if (!hasPath && *(path = p))
@@ -234,6 +243,7 @@ next_param:
 		if (!extStart && !hasPath) extStart = path;
 		if (extStart) ext = extStart;
 	}
+
 	if (!hasPath)
 	{
 		PWSTR olestr = 0;
@@ -261,13 +271,14 @@ next_param:
 	if (SUCCEEDED(hr))
 	{
 		CLSID encoderClsid, *pEncoderId = 0;
-		GdiplusStartupInput gdipStartupInput;
-		ULONG_PTR gdipToken = 0, havegdip = 1;
-		Gdiplus::Status gdips = havegdip ? GdiplusStartup(&gdipToken, &gdipStartupInput, NULL) : Gdiplus::Status(17);
-		if (gdips)
-			gdipToken = 0, ext = TEXT("bmp");
-		else if (SUCCEEDED(hr = GetEncoderClsidFromExt(ext, &encoderClsid)))
+		if (gdipToken && SUCCEEDED(hr = GetEncoderClsidFromExt(ext, &encoderClsid)))
+		{
 			pEncoderId = &encoderClsid;
+		}
+		else
+		{
+			hr = lstrcmpi(ext, TEXT("bmp")) ? HRESULT_FROM_WIN32(ERROR_BAD_FORMAT) : S_OK;
+		}
 
 		if (SUCCEEDED(hr))
 		{
@@ -278,8 +289,9 @@ next_param:
 			}
 			hr = CaptureScreen(pEncoderId, path, setClipboard);
 		}
-		if (gdipToken) GdiplusShutdown(gdipToken);
 	}
+
+	if (gdipToken) Gdiplus::GdiplusShutdown(gdipToken);
 	return (ec = LOWORD(hr), (HRESULT_FROM_WIN32(ec) == hr)) ? ec : hr;
 }
 
